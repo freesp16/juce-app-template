@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Linux desktop build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libasound2-dev libx11-dev libxext-dev \
+            libxrandr-dev libxinerama-dev libxcursor-dev libxcomposite-dev libxi-dev libegl-dev libgles-dev \
+            libfreetype-dev libfontconfig1-dev
+      - run: cmake --preset linux && cmake --build --preset linux
+
+  unit:
+    name: Build for the unit (armel)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: docker/setup-buildx-action@v3
+      - name: Toolchain image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: toolchain
+          tags: sp16-toolchain:gcc11-egl
+          load: true
+          cache-from: type=gha,scope=toolchain
+          cache-to: type=gha,mode=max,scope=toolchain
+      - run: scripts/build-unit.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-template
+          path: out/app-template

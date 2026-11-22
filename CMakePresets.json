@@ -1,0 +1,12 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {"name": "linux", "displayName": "Linux desktop", "generator": "Ninja", "binaryDir": "${sourceDir}/build/linux"},
+    {"name": "unit", "displayName": "The unit (armel): run scripts/build-unit.sh", "generator": "Ninja",
+     "binaryDir": "${sourceDir}/build/unit", "toolchainFile": "${sourceDir}/toolchain/cross.cmake"}
+  ],
+  "buildPresets": [
+    {"name": "linux", "configurePreset": "linux"},
+    {"name": "unit", "configurePreset": "unit"}
+  ]
+}

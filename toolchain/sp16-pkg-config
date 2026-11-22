@@ -1,0 +1,6 @@
+#!/bin/sh
+# pkg-config for the SP-16 sysroot. CMake is pointed at this one (toolchain/cross.cmake: PKG_CONFIG_EXECUTABLE), so the
+# NATIVE pkg-config that JUCE's helper tool (juceaide) uses is not poisoned by a global PKG_CONFIG_SYSROOT_DIR.
+export PKG_CONFIG_SYSROOT_DIR=/opt/sp16/sysroot
+export PKG_CONFIG_LIBDIR=/opt/sp16/sysroot/usr/lib/arm-linux-gnueabi/pkgconfig:/opt/sp16/sysroot/usr/lib/pkgconfig:/opt/sp16/sysroot/usr/share/pkgconfig
+exec pkg-config "$@"
