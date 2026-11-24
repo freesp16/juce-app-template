@@ -29,7 +29,14 @@ public:
     static constexpr double kMinGapMs = 10.0;     // changes are coalesced to ≤ 100 frames/s
     static constexpr double kEchoTickMs = 33.0;   // echo fades are recomputed at ~30 Hz while one runs
 
-    LampBus();
+    explicit LampBus(platform::Unit unit = platform::Unit::Sp16);
+    platform::Unit unit() const noexcept { return unit_; }
+    // DJS-1000 (the flags byte of its TX frame): the panel keeps the outputs muted until outputsLive(true), shows its
+    // start-up state until the first answer (answered()), and puts the unit in standby after requestStandby().
+    void setOutputsLive(bool live);
+    void answered();
+    void requestStandby();
+    std::uint8_t flags() const noexcept;
     // Message thread (PanelLamps::flush): the app's frame replaces the echo for good.
     void publish(const TxFrame&);
     // Reader threads: input seen by the panel or the strip, for the echo (ignored once the app publishes).
@@ -44,7 +51,9 @@ private:
     void renderEcho(double nowMs); // under mutex_
 
     mutable std::mutex mutex_;
+    platform::Unit unit_;
     TxFrame frame_;
+    std::atomic<bool> outputsLive_ {false}, answered_ {false}, standby_ {false};
     bool changed_ = true;
     double lastSentMs_ = -1e12;
     std::atomic<bool> external_ {false};
@@ -61,7 +70,7 @@ class PanelLamps final : public io::LampSink
 public:
     // `board` (may be null): the analog filter's select line follows the ACTIVE lamp (AnalogBoard.h).
     explicit PanelLamps(std::shared_ptr<LampBus> bus, std::shared_ptr<AnalogBoard> board = {})
-        : bus_(std::move(bus)), board_(std::move(board))
+        : bus_(std::move(bus)), board_(std::move(board)), frame_(bus_->unit())
     {
     }
     void setLamp(io::Control c, std::uint32_t rgb, std::uint8_t level) override

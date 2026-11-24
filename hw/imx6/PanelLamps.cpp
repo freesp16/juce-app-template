@@ -19,7 +19,7 @@ std::uint32_t echoColour(io::Control c) noexcept
 }
 } // namespace
 
-LampBus::LampBus()
+LampBus::LampBus(platform::Unit unit) : unit_(unit), frame_(unit)
 {
     echo_[io::Control::StripModePitch] = {io::LampMode::On, io::lampcolour::white, 0};
     renderEcho(0);
@@ -85,13 +85,13 @@ void LampBus::renderEcho(double nowMs)
 {
     lastEchoRenderMs_ = nowMs;
     echoDirty_ = false;
-    TxFrame f;
+    TxFrame f(unit_);
     for (const auto c : io::lampControls())
     {
         const auto out = io::resolve(echo_[c], nowMs);
         f.setLamp(c, out.rgb, out.level);
     }
-    f.finish();
+    f.finish(flags());
     if (! (f == frame_))
     {
         frame_ = f;
@@ -112,6 +112,7 @@ bool LampBus::take(double nowMs, TxFrame& out, double& waitMs)
     if (due)
     {
         out = frame_;
+        out.finish(flags()); // the DJS-1000's flags as they are now
         changed_ = false;
         lastSentMs_ = nowMs;
     }
@@ -122,9 +123,38 @@ bool LampBus::take(double nowMs, TxFrame& out, double& waitMs)
     return due;
 }
 
+std::uint8_t LampBus::flags() const noexcept
+{
+    return static_cast<std::uint8_t>((outputsLive_.load() ? 0 : TxFrame::kFlagMute)
+                                     | (standby_.load() ? TxFrame::kFlagStandby : 0)
+                                     | (answered_.load() ? 0 : TxFrame::kFlagStartup));
+}
+
+// A change of the flags is sent at once (as a changed frame), whoever makes it.
+static void flagChanged(std::atomic<bool>& flag, bool value, std::mutex& mutex, bool& changed, void (*&wake)(void*),
+                        void*& arg)
+{
+    if (flag.exchange(value) == value)
+        return;
+    void (*w)(void*) = nullptr;
+    void* a = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        changed = true;
+        w = wake;
+        a = arg;
+    }
+    if (w != nullptr)
+        w(a);
+}
+
+void LampBus::setOutputsLive(bool live) { flagChanged(outputsLive_, live, mutex_, changed_, wake_, wakeArg_); }
+void LampBus::answered() { flagChanged(answered_, true, mutex_, changed_, wake_, wakeArg_); }
+void LampBus::requestStandby() { flagChanged(standby_, true, mutex_, changed_, wake_, wakeArg_); }
+
 void PanelLamps::flush()
 {
-    frame_.finish();
+    frame_.finish(bus_->flags());
     bus_->publish(frame_);
     if (board_)
         board_->setActive(active_);

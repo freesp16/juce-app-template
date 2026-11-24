@@ -527,7 +527,7 @@ void Screen::tap(juce::Point<float> p)
         if (p.x < L::slotC.getCentreX())
             synth_.toneOn = ! synth_.toneOn.load();
         else
-            synth_.tonePort = (synth_.tonePort.load() + 1) % (kOutPorts - 1); // MAIN … PHONES
+            synth_.tonePort = nextJack(synth_.tonePort.load(), 1); // MAIN … PHONES, the jacks this unit has
     }
     else if (L::slotD.contains(p))
         synth_.seqRunning = ! synth_.seqRunning.load();
@@ -612,7 +612,7 @@ bool Screen::handle(const io::ControlEvent& e, double nowMs)
         if (shift_)
             synth_.toneSide = (synth_.toneSide.load() + (e.value > 0 ? 1 : 2)) % 3;
         else
-            synth_.tonePort = std::clamp(synth_.tonePort.load() + (e.value > 0 ? 1 : -1), 0, kOutPorts - 1);
+            synth_.tonePort = nextJack(synth_.tonePort.load(), e.value > 0 ? 1 : -1);
     }
     else if (e.kind == K::Press)
     {
@@ -629,14 +629,12 @@ bool Screen::handle(const io::ControlEvent& e, double nowMs)
             if (shift_ && onQuit)
                 onQuit();
             break;
-        case C::PadModeTrack: setScale(0); break;
-        case C::PadModeMute: setScale(1); break;
-        case C::PadModeSlice: setScale(2); break;
-        case C::PadModeScale: setScale(3); break;
         case C::Scene: octave_ = std::max(-2, octave_ - 1); setScale(scale_); break;
         case C::Pattern: octave_ = std::min(2, octave_ + 1); setScale(scale_); break;
         default:
-            if (io::isStep(e.control))
+            if (const auto k = std::find(scaleKeys_.begin(), scaleKeys_.end(), e.control); k != scaleKeys_.end())
+                setScale(static_cast<int>(k - scaleKeys_.begin()));
+            else if (io::isStep(e.control))
                 synth_.seqSteps = synth_.seqSteps.load() ^ (1u << (io::indexOf(e.control) - 1));
             else if (e.control >= C::Bar1 && e.control <= C::Bar4)
             {
@@ -774,7 +772,7 @@ void Screen::lamps(io::LampFrame& f, double) const
     // REC blinks while the test tone sounds. (Never drive AFS ACTIVE from a demo: on the unit that lamp also switches
     // the analog filter's select line, hw/imx6/AnalogBoard.h.)
     f[C::Rec] = synth_.toneOn.load() ? io::LampState {LampMode::BlinkSlow, io::lampcolour::red, 0} : io::LampState {};
-    const C modes[] = {C::PadModeTrack, C::PadModeMute, C::PadModeSlice, C::PadModeScale};
+    const auto& modes = scaleKeys_;
     for (int i = 0; i < 4; ++i)
         f[modes[i]] = i == scale_ ? io::LampState {LampMode::On, io::lampcolour::white, 0} : io::LampState {};
     for (int i = 0; i < 4; ++i)
@@ -784,6 +782,28 @@ void Screen::lamps(io::LampFrame& f, double) const
     f[C::Pattern] = octave_ > 0 ? io::LampState {LampMode::On, io::lampcolour::white, 0} : io::LampState {};
     io::stripLamps(strip_ < 0 ? 0 : strip_, strip_ >= 0, false, io::StripMode::Pitch, f);
     f[C::StripModePitch] = {LampMode::On, io::lampcolour::white, 0};
+}
+
+void Screen::setUnit(const platform::Capabilities& unit)
+{
+    // the unit's pad-mode keys in panel order: TRACK, MUTE, HOT SLICE, SLICE, SCALE as far as it has them
+    std::size_t k = 0;
+    for (const auto c : {io::Control::PadModeTrack, io::Control::PadModeMute, io::Control::PadModeHotSlice,
+                         io::Control::PadModeSlice, io::Control::PadModeScale})
+        if (k < scaleKeys_.size() && unit.has(c))
+            scaleKeys_[k++] = c;
+}
+
+int Screen::nextJack(int from, int step) const
+{
+    constexpr int jacks = kOutPorts - 1; // MAIN … PHONES (not the analog filter's send)
+    for (int i = 1; i <= jacks; ++i)
+    {
+        const int p = ((from + step * i) % jacks + jacks) % jacks;
+        if (synth_.portPresent(p))
+            return p;
+    }
+    return from;
 }
 
 SceneInput Screen::scene(double nowMs) const

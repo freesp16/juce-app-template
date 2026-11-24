@@ -142,6 +142,9 @@ int run()
 
     Screen screen(synth, midi);
     screen.onQuit = [] { platform::requestQuit(); };
+    const auto unit = machine->capabilities(); // what this unit has: the demo leaves out what it cannot map
+    screen.setUnit(unit);
+    logLine("UNIT %s", unit.model.c_str());
     std::string error;
     auto display = machine->display(error); // the platform's display handles
     GlDisplay gl;                           // declared after the screen: destroyed before it
@@ -152,7 +155,7 @@ int run()
         return 2;
     }
     logLine("DISPLAY %s", gl.describe().c_str());
-    screen.setStatus({std::string(machine->id()), std::string("gl-") + flavour,
+    screen.setStatus({machine->id() == "imx6" ? unit.model : std::string(machine->id()), std::string("gl-") + flavour,
                       audio != nullptr ? std::string(audio->id()) : std::string("no audio")});
 
     // 3. The frame loop, paced by the display (eglSwapBuffers waits for vsync).

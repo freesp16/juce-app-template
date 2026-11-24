@@ -49,6 +49,9 @@ public:
         std::string platform, renderer, audio;
     };
     void setStatus(const Status&);
+    // The unit's panel: the four keys that pick the scale are its pad-mode keys (SP-16: TRACK, MUTE, SLICE, SCALE;
+    // DJS-1000: MUTE, HOT SLICE, SLICE, SCALE). Controls a unit lacks are simply never used.
+    void setUnit(const platform::Capabilities&);
 
     bool handle(const io::ControlEvent& e, double nowMs); // false = not used by the demo
     void midiIn(const MidiMessageIn&, double nowMs);
@@ -73,6 +76,7 @@ private:
     void padDown(int pad0, int velocity, double nowMs, bool trigger); // trigger: also send the hit to the synth
     void padUp(int pad0, double nowMs);
     void setScale(int scale);
+    int nextJack(int from, int step) const; // the next output jack that exists (TONE), MAIN … PHONES
     void sendMidi(const std::uint8_t* bytes, int size, double nowMs);
 
     Synth& synth_;
@@ -86,6 +90,8 @@ private:
     MasterMeter* master_ = nullptr;
     KnobStrip* knobs_ = nullptr;
     bool shift_ = false;
+    std::array<io::Control, 4> scaleKeys_ {io::Control::PadModeTrack, io::Control::PadModeMute,
+                                           io::Control::PadModeSlice, io::Control::PadModeScale};
     int scale_ = 0, octave_ = 0, bpmPreset_ = 1, touchPad_ = -1, strip_ = -1;
     double lastFrameMs_ = 0;
     juce::String statusBase_; // platform · renderer

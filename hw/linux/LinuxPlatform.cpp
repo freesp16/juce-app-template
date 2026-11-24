@@ -6,6 +6,7 @@
 //   audio_device=<ALSA PCM>       default `default`
 //   audio_channels=N, audio_map=  a multi-channel interface, e.g. audio_channels=8 audio_map=out34:2/3,out56:4/5
 //   scale=1..4                    window = 800·scale × 480·scale pixels
+//   unit=sp16|djs1000             the unit it stands in for (capabilities(); default sp16, or BOOTMENU_UNIT)
 #include "Platform.h"
 
 #include "common/AlsaOutput.h"
@@ -39,13 +40,15 @@ public:
     {
         return "linux desktop, audio alsa " + device_ + " (" + std::to_string(channels_) + " ch" + (mapNote_.empty() ? "" : ", " + mapNote_)
              + "), X11 window " + std::to_string(800 * window_->scale) + "x" + std::to_string(480 * window_->scale)
-             + ", keyboard + mouse";
+             + ", keyboard + mouse, standing in for the " + std::string(unitModel(unit_));
     }
     Paths paths() const override { return host::xdgPaths(); }
 
     void configure(const Settings& settings) override
     {
         device_ = setting(settings, "audio_device", "default");
+        const char* env = std::getenv("BOOTMENU_UNIT");
+        unit_ = unitFromKey(setting(settings, "unit", env != nullptr ? env : "sp16")).value_or(Unit::Sp16);
         window_->scale = std::clamp(std::atoi(setting(settings, "scale", "1").c_str()), 1, 4);
         channels_ = static_cast<unsigned>(std::clamp(std::atoi(setting(settings, "audio_channels", "2").c_str()), 2, 32));
         map_ = common::mainOnly(0, 1);
@@ -72,11 +75,14 @@ public:
 
     std::unique_ptr<io::LampSink> lamps() override { return nullptr; }
     std::unique_ptr<DisplayDevice> display(std::string&) override { return makeLinuxDisplay(window_); }
+    // The panel of the unit it stands in for; the keyboard reaches the controls the two units share.
+    Capabilities capabilities() const override { return panelCapabilities(unit_); }
 
 private:
     std::shared_ptr<LinuxWindow> window_ = std::make_shared<LinuxWindow>();
     std::string device_ = "default", mapNote_;
     unsigned channels_ = 2;
+    Unit unit_ = Unit::Sp16;
     common::AlsaPortMap map_ = common::mainOnly(0, 1);
 };
 } // namespace

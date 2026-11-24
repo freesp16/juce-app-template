@@ -1,5 +1,5 @@
 // The hardware layer's whole contract with the app: one Platform per machine, chosen at build time
-// (hw/imx6 = the SP-16 unit, hw/linux = a Linux desktop standing in for it).
+// (hw/imx6 = the unit, an SP-16 or a DJS-1000 found at run time; hw/linux = a Linux desktop standing in for one).
 //
 //   createPlatform()        the machine
 //   configure(settings)     key=value settings, before the rest
@@ -12,8 +12,9 @@
 // MIDI is not part of Platform: ALSA raw MIDI works the same on both (hw/common/MidiPort.h; DIN and USB on the unit).
 #pragma once
 
-#include "controls/ControlSurface.h"
+#include "controls/ControlNames.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -29,8 +30,8 @@ namespace platform
 {
 // ---- audio ----
 
-// Logical stereo outputs. On the unit: MAIN, OUT 3-4, 5-6, 7-8 on the AK4458, PHONES on the AK4452, the analog filter's
-// send (only with filter_loop=1). On a desktop: MAIN only.
+// Logical stereo outputs. On the SP-16: MAIN, OUT 3-4, 5-6, 7-8 on the AK4458, PHONES on the AK4452, the analog filter's
+// send (only with filter_loop=1). On the DJS-1000: MAIN and PHONES. On a desktop: MAIN only.
 enum class AudioPort : std::uint8_t { Main, Out34, Out56, Out78, Phones, FilterSend, Count };
 constexpr int kAudioPorts = static_cast<int>(AudioPort::Count);
 
@@ -118,6 +119,43 @@ public:
     virtual bool sizeKnown() const noexcept { return true; }
 };
 
+// ---- the unit ----
+
+// The models this hardware layer knows. Both are the same i.MX6 board with the same screen, GPU and panel link; their
+// panels report different controls, their codecs have different outputs (hw/imx6/PanelRoles.h, Imx6Platform.cpp).
+enum class Unit : std::uint8_t { Sp16, Djs1000 };
+constexpr std::string_view unitKey(Unit u) noexcept { return u == Unit::Djs1000 ? "djs1000" : "sp16"; }
+constexpr std::string_view unitModel(Unit u) noexcept { return u == Unit::Djs1000 ? "DJS-1000" : "TORAIZ SP-16"; }
+constexpr std::optional<Unit> unitFromKey(std::string_view k) noexcept
+{
+    if (k == "djs1000" || k == "djs" || k == "DJS-1000")
+        return Unit::Djs1000;
+    if (k == "sp16" || k == "SP-16")
+        return Unit::Sp16;
+    return std::nullopt;
+}
+
+// What the unit has, so an app can leave out what it cannot map (a control that is not there, a lamp that cannot
+// light, an output jack that is absent: AudioDevice::ports()).
+struct Capabilities
+{
+    Unit unit = Unit::Sp16;
+    std::string model {};                                   // "TORAIZ SP-16", "DJS-1000"
+    std::array<bool, io::kLampSlots> controls {};           // produces events (by io::lampSlot)
+    std::array<bool, io::kLampSlots> lamps {};              // can be lit
+    bool has(io::Control c) const noexcept { return slot(c) >= 0 && controls[static_cast<std::size_t>(slot(c))]; }
+    bool lights(io::Control c) const noexcept { return slot(c) >= 0 && lamps[static_cast<std::size_t>(slot(c))]; }
+
+private:
+    static int slot(io::Control c) noexcept
+    {
+        const int s = io::lampSlot(c);
+        return s >= 0 && s < io::kLampSlots ? s : -1;
+    }
+};
+// The panel of `unit` as capabilities (hw/imx6/PanelRoles.cpp; the desktop uses it too, to stand in for that unit).
+Capabilities panelCapabilities(Unit unit);
+
 // ---- the machine ----
 
 struct Paths { std::string dataDir, settingsFile, cacheDir; std::vector<std::string> usbMounts; };
@@ -137,6 +175,8 @@ public:
     virtual std::vector<std::unique_ptr<io::ControlSource>> controlSources(const ControlEnv&) = 0;
     virtual std::unique_ptr<io::LampSink> lamps() = 0;  // null = no lamps
     virtual std::unique_ptr<DisplayDevice> display(std::string& error) = 0;
+    // The unit and what it has (after configure()). The desktop stands in for the SP-16 unless unit=djs1000.
+    virtual Capabilities capabilities() const = 0;
 };
 
 std::unique_ptr<Platform> createPlatform(); // imx6/Imx6Platform.cpp or linux/LinuxPlatform.cpp, per build
