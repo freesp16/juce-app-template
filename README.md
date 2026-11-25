@@ -60,6 +60,7 @@ Settings (all optional):
 | `audio_period=128` | the audio period in frames (default 256 at 44.1 kHz) |
 | `midi=0`, `audio=0` | no MIDI ports / no audio |
 | `stat=10` | seconds between the `STAT` log lines (frame rate, DSP load, xruns); 0 = none |
+| `display=cpu` | how the screen is drawn: `fb` (the GPU, on the unit), `x11` (the GPU in a window, on a desktop) or `cpu` (into an X window, without a GPU). By default the GPU, then the CPU when the GPU cannot draw |
 | `unit=djs1000` | which unit, when the detection is wrong (`sp16`, `djs1000`); on a desktop, the unit it stands in for |
 | `phones_knob=0` | DJS-1000: PHONES stays at `phones_gain` instead of following the PHONES LEVEL knob |
 

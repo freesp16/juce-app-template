@@ -2,14 +2,16 @@
 //
 //   1. the platform (the unit, or a Linux desktop) and the settings
 //   2. JUCE (no windows: see app/Theme.h), the synth on the codec, the panel / strip / touch, the lamps, MIDI, the screen
-//   3. every frame: control events → screen, MIDI → screen, screen.frame(), the lamps, GlDisplay::draw()
+//   3. every frame: control events → screen, MIDI → screen, screen.frame(), the lamps, the display's draw()
 //   4. quit on SHIFT + BACK, ↩ on the screen, the desktop window's close button or SIGTERM (the boot menu stops apps
 //      that way); exit code 0 brings the boot menu back
 //
 // Settings: key=value lines in the platform's settings file (the unit: <stick>/<name>-data/<name>/<name>.conf; a
 // desktop: ~/.config/<name>/<name>.conf), overridden by <PREFIX>_<KEY> environment variables (the boot menu exports the
 // lines of <stick>/<name>.conf that way). The app reads: audio=0|1, midi=0|1, tone=0|1, tone_port=main|out34|…,
-// seq=0|1, stat=<seconds>; the platform reads its own (hw/imx6/Imx6Platform.cpp, hw/linux/LinuxPlatform.cpp).
+// seq=0|1, stat=<seconds>, display=auto|fb|x11|cpu. The platform reads its own (hw/imx6/Imx6Platform.cpp,
+// hw/linux/LinuxPlatform.cpp).
+#include "app/CpuDisplay.h"
 #include "app/GlDisplay.h"
 #include "app/Log.h"
 #include "app/Midi.h"
@@ -28,6 +30,9 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <memory>
+#include <string>
+#include <vector>
 
 extern char** environ;
 
@@ -46,7 +51,8 @@ std::string trim(std::string s)
 // Defaults, then the file's key=value lines, then <PREFIX>_<KEY> variables (keys are lower case).
 platform::Settings loadSettings(const std::string& file)
 {
-    platform::Settings s {{"audio", "1"}, {"midi", "1"}, {"tone", "0"}, {"tone_port", "main"}, {"seq", "0"}, {"stat", "10"}};
+    platform::Settings s {{"audio", "1"}, {"midi", "1"}, {"tone", "0"}, {"tone_port", "main"}, {"seq", "0"}, {"stat", "10"},
+                           {"display", "auto"}};
     std::ifstream in(file);
     for (std::string line; std::getline(in, line);)
         if (const auto eq = line.find('='); eq != std::string::npos && trim(line).rfind('#', 0) != 0)
@@ -147,15 +153,43 @@ int run()
     logLine("UNIT %s", unit.model.c_str());
     std::string error;
     auto display = machine->display(error); // the platform's display handles
-    GlDisplay gl;                           // declared after the screen: destroyed before it
-    const char* flavour = machine->id() == "imx6" ? "fb" : "x11";
-    if (! gl.open(display->rendererEnv(), flavour, screen, error))
+    // The GPU first (the unit's framebuffer, a desktop's X11 window), then the CPU into an X11 window, unless the
+    // display setting names one. The unit skips GL in an X window: its X server shows it black.
+    std::unique_ptr<ScreenOutput> output; // declared after the screen: destroyed before it
+    std::string outputName;
+    const std::string wanted = settings["display"];
+    const std::vector<std::string> order = wanted != "auto"         ? std::vector<std::string> {wanted}
+                                           : machine->id() == "imx6" ? std::vector<std::string> {"fb", "cpu"}
+                                                                     : std::vector<std::string> {"x11", "cpu"};
+    for (const auto& name : order)
     {
-        logLine("FATAL no display (%s): %s", flavour, error.c_str());
+        error.clear();
+        if (name == "cpu")
+        {
+            auto cpu = std::make_unique<CpuDisplay>();
+            if (cpu->open(display->rendererEnv(), screen, error))
+                output = std::move(cpu);
+        }
+        else
+        {
+            auto gl = std::make_unique<GlDisplay>();
+            if (gl->open(display->rendererEnv(), name, screen, error))
+                output = std::move(gl);
+        }
+        if (output)
+        {
+            outputName = name == "cpu" ? name : "gl-" + name;
+            break;
+        }
+        logLine("DISPLAY %s failed: %s", name.c_str(), error.c_str());
+    }
+    if (! output)
+    {
+        logLine("FATAL no display");
         return 2;
     }
-    logLine("DISPLAY %s", gl.describe().c_str());
-    screen.setStatus({machine->id() == "imx6" ? unit.model : std::string(machine->id()), std::string("gl-") + flavour,
+    logLine("DISPLAY %s", output->describe().c_str());
+    screen.setStatus({machine->id() == "imx6" ? unit.model : std::string(machine->id()), outputName,
                       audio != nullptr ? std::string(audio->id()) : std::string("no audio")});
 
     // 3. The frame loop, paced by the display (eglSwapBuffers waits for vsync).
@@ -198,7 +232,7 @@ int run()
             io::apply(lampFrame, now, io::LampBrightness::Normal, *lamps); // sent on change (+ a 4 Hz heartbeat)
         }
         synth.scope(scope, 512);
-        if (! gl.draw(screen.scene(now), scope, 512))
+        if (! output->draw(screen.scene(now), scope, 512))
         {
             logLine("FATAL the display surface is gone");
             break;
