@@ -1,6 +1,7 @@
-// The SP-16 panel link's frames, device-independent: the 128-byte RX frame → logical ControlEvents (buttons by role,
-// pads through the velocity curve, encoders and selector, analog pots, LCD touch) and the 128-byte TX lamp frame.
-// The byte layout is in PanelRoles.h.
+// The panel link's frames (SP-16 or DJS-1000), device-independent: the 128-byte RX frame → logical ControlEvents
+// (buttons by role, pads through the velocity curve, encoders and selector, analog pots, LCD touch) and the 128-byte
+// TX lamp frame.
+// The byte layout of each unit is in PanelRoles.h (PanelMap).
 //
 // Cost (aim: ≤ 1 % of a core at the panel frame rate): decode() touches 128 bytes, walks only the changed button
 // bits, and never allocates.
@@ -33,6 +34,7 @@ struct EventBatch
 
 struct DecoderConfig
 {
+    platform::Unit unit = platform::Unit::Sp16; // whose panel (PanelRoles.h; its PanelMap::pads suit `pads`)
     io::PadCalibration pads {};
     io::PadResponse response {};
     TouchCalibration touch {};
@@ -70,11 +72,12 @@ private:
     void decodeTouch(const std::uint8_t* f, double timeMs, EventBatch& out) noexcept;
 
     DecoderConfig config_;
+    const PanelMap* map_ = &panelMap(platform::Unit::Sp16);
     io::PadCurve curve_;
     platform::TriggerSink* triggers_ = nullptr;
     bool haveFrame_ = false;
     std::array<std::uint16_t, 7> counters_ {};
-    std::array<std::uint8_t, 6> buttons_ {};
+    std::array<std::uint8_t, 7> buttons_ {};
     std::array<bool, 16> padDown_ {};
     std::array<std::uint8_t, 16> padPressure_ {};
     std::array<int, 3> analog_ {-1, -1, -1};
@@ -84,25 +87,31 @@ private:
     std::int16_t touchX_ = 0, touchY_ = 0;
 };
 
-// TX lamp frame: header 2, RGB channels, mono bits with dim flags, brightness level, marker 0xaa at 0x77,
-// CRC-16/X-25 at 0x7c (as the RX frame).
+// TX lamp frame: header 2, RGB channels, the other lamps (SP-16: one bit and a dim flag; DJS-1000: two bits each),
+// brightness level, the SP-16's marker 0xaa at 0x77 or the DJS-1000's flags at 0x6c, CRC-16/X-25 at 0x7c (as RX).
 class TxFrame
 {
 public:
-    TxFrame() { clear(); }
+    // The DJS-1000's flags byte (PanelMap::txFlagsOffset): the panel keeps the outputs muted while kFlagMute is set.
+    static constexpr std::uint8_t kFlagMute = 0x01, kFlagStandby = 0x02, kFlagStartup = 0x04;
+
+    explicit TxFrame(platform::Unit unit = platform::Unit::Sp16) : map_(&panelMap(unit)) { clear(); }
     void clear() noexcept;
     void setRgb(int channel, std::uint8_t r, std::uint8_t g, std::uint8_t b) noexcept; // 0…kRgbFullScale each
     void setMono(int channel, bool lit, bool dim) noexcept;
     // A logical lamp (LampSink::setLamp semantics: rgb colour, level 0 = off … 255 = full). Mono lamps light for any
-    // non-zero colour and level; level < kMonoDimBelow sets the dim flag where the channel has one.
+    // non-zero colour and level; level < kMonoDimBelow sets the dim flag (or the dim level) where the lamp has one.
     bool setLamp(io::Control, std::uint32_t rgb, std::uint8_t level) noexcept; // false: the panel has no such lamp
-    void finish() noexcept;                                                  // brightness, marker, CRC
+    // brightness, marker or flags, CRC; `flags` goes to the flags byte where the unit has one
+    void finish(std::uint8_t flags = kFlagMute) noexcept;
     const std::uint8_t* data() const noexcept { return bytes_.data(); }
     bool operator==(const TxFrame& o) const noexcept { return bytes_ == o.bytes_; }
+    platform::Unit unit() const noexcept { return map_->unit; }
 
     static constexpr std::uint8_t kMonoDimBelow = 160;
 
 private:
+    const PanelMap* map_;
     std::array<std::uint8_t, kFrameBytes> bytes_ {};
 };
 } // namespace platform::imx6::panel

@@ -64,6 +64,19 @@ constexpr ControlInfo infoFor(Control c) noexcept
     case Control::StripModeRepeat:
     case Control::StripModeUser1:
     case Control::StripModeUser2: return {K::LampOnly, L::Mono, 0, 2, true};
+    // DJS-1000 panel (reference = false: not on the SP-16 panel; Platform::capabilities() says what a unit has)
+    case Control::PadModeHotSlice: return {K::Button, L::Mono, 0, 1, false};
+    case Control::TempoReset:
+    case Control::Sync:
+    case Control::Master:
+    case Control::FxOn:
+    case Control::LiveSampling:
+    case Control::FxSelect:
+    case Control::ExtProject: return {K::Button, L::Mono, 0, 0, false}; // PROJECT is lit on the DJS-1000
+    case Control::TempoRange: return {K::Button, L::None, 0, 0, false};
+    case Control::TempoFader:
+    case Control::FxLevel:
+    case Control::PhonesLevel: return {K::Absolute, L::None, 1023, 0, false};
     default: break;
     }
     if (c >= Control::ExtCopy && c <= Control::ExtProject)

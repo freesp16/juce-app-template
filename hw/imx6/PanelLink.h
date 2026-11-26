@@ -35,7 +35,9 @@ class PanelLink final : public io::ControlSource
 {
 public:
     // `board` (may be null): every HP CUTOFF pot change also goes to the analog filter's DAC (AnalogBoard.h).
-    PanelLink(platform::TriggerSink* triggers, std::shared_ptr<panel::LampBus> lamps, bool trace,
+    // `unit`: whose panel (PanelRoles.h); `pads` its pad calibration.
+    PanelLink(platform::Unit unit, const io::PadCalibration& pads, platform::TriggerSink* triggers,
+              std::shared_ptr<panel::LampBus> lamps, bool trace,
               std::shared_ptr<panel::AnalogBoard> board = {});
     ~PanelLink() override;
     std::string_view id() const override { return "panel"; }
@@ -43,15 +45,21 @@ public:
     void stop() override;
     void poll(std::vector<io::ControlEvent>& out) override; // UI thread, wait-free
     PanelStats stats() const;
+    // DJS-1000: each PHONES LEVEL value, as a gain 0…1 (an audio taper, the square of the knob), goes here.
+    void setPhonesLevel(std::shared_ptr<std::atomic<float>> level) { phonesLevel_ = std::move(level); }
 
 private:
     void run();
     void sendDue(double nowMs, double& waitMs);
     static void wake(void* self);
 
+    const panel::PanelMap& map_;
     platform::TriggerSink* triggers_;
+    bool takenOver_ = false;
+    std::uint8_t lastPowerByte_ = 0;
     std::shared_ptr<panel::LampBus> lamps_;
     std::shared_ptr<panel::AnalogBoard> board_;
+    std::shared_ptr<std::atomic<float>> phonesLevel_;
     bool trace_;
     panel::PanelDecoder decoder_;
     panel::EventBatch batch_;

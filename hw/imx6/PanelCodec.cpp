@@ -1,4 +1,4 @@
-// The SP-16 panel link's frames (see PanelCodec.h). Device-independent: also compiles on a desktop.
+// The panel link's frames of either unit (see PanelCodec.h). Device-independent: also compiles on a desktop.
 #include "imx6/PanelCodec.h"
 
 #include <algorithm>
@@ -9,7 +9,11 @@ namespace platform::imx6::panel
 {
 namespace
 {
-inline std::uint16_t be16(const std::uint8_t* p) noexcept { return static_cast<std::uint16_t>(p[0] << 8 | p[1]); }
+// A 16-bit word as read: big-endian on the SP-16, little-endian on the DJS-1000.
+inline std::uint16_t word(const PanelMap& m, const std::uint8_t* p) noexcept
+{
+    return m.bigEndian ? static_cast<std::uint16_t>(p[0] << 8 | p[1]) : static_cast<std::uint16_t>(p[1] << 8 | p[0]);
+}
 
 constexpr auto crcTable = [] {
     std::array<std::uint16_t, 256> t {};
@@ -23,14 +27,23 @@ constexpr auto crcTable = [] {
     return t;
 }();
 
-// Logical lamp → index into kLamps, -1 = no lamp on this panel.
-constexpr auto lampIndex = [] {
-    std::array<std::int8_t, io::kLampSlots> t {};
+// Logical lamp → index into a unit's lamp table, -1 = no lamp on this panel.
+using LampIndex = std::array<std::int8_t, io::kLampSlots>;
+template <std::size_t N>
+constexpr LampIndex indexLamps(const std::array<LampRole, N>& lamps) noexcept
+{
+    static_assert(N < 128, "lamp indices are int8");
+    LampIndex t {};
     t.fill(-1);
-    for (std::size_t i = 0; i < kLamps.size(); ++i)
-        t[static_cast<std::size_t>(io::lampSlot(kLamps[i].control))] = static_cast<std::int8_t>(i);
+    for (std::size_t i = 0; i < N; ++i)
+        t[static_cast<std::size_t>(io::lampSlot(lamps[i].control))] = static_cast<std::int8_t>(i);
     return t;
-}();
+}
+constexpr LampIndex kSp16LampIndex = indexLamps(sp16::kLamps), kDjsLampIndex = indexLamps(djs1000::kLamps);
+const LampIndex& lampIndex(platform::Unit u) noexcept
+{
+    return u == platform::Unit::Djs1000 ? kDjsLampIndex : kSp16LampIndex;
+}
 } // namespace
 
 std::uint16_t crcX25(const std::uint8_t* data, int n) noexcept
@@ -54,6 +67,7 @@ PanelDecoder::PanelDecoder(const DecoderConfig& c) { configure(c); }
 void PanelDecoder::configure(const DecoderConfig& c)
 {
     config_ = c;
+    map_ = &panelMap(c.unit);
     curve_.configure(c.pads, c.response);
 }
 
@@ -87,12 +101,13 @@ void PanelDecoder::decode(const std::uint8_t* f, double t, EventBatch& out) noex
 {
     using Kind = io::ControlEvent::Kind;
     const auto src = io::kSourcePanel;
+    const PanelMap& m = *map_;
 
     // Pads first: their hits are the latency-critical part.
     const auto& cal = config_.pads;
     for (int i = 0; i < 16; ++i)
     {
-        const int pressure = be16(f + kPadPressureOffset + 2 * i), contact = be16(f + kPadContactOffset + 2 * i);
+        const int pressure = word(m, f + m.padPressureOffset + 2 * i), contact = word(m, f + m.padContactOffset + 2 * i);
         auto& down = padDown_[static_cast<std::size_t>(i)];
         if (! down)
         {
@@ -119,14 +134,14 @@ void PanelDecoder::decode(const std::uint8_t* f, double t, EventBatch& out) noex
     }
 
     // Buttons: only the changed bits.
-    for (int b = 1; b <= 5; ++b)
+    for (int b = 1; b <= m.buttonBytes; ++b)
     {
         unsigned changed = static_cast<unsigned>(f[b] ^ buttons_[static_cast<std::size_t>(b)]);
         while (changed != 0)
         {
             const int bit = __builtin_ctz(changed);
             changed &= changed - 1;
-            const auto c = kButtonGrid.at[static_cast<std::size_t>(b)][static_cast<std::size_t>(bit)];
+            const auto c = m.buttons->at[static_cast<std::size_t>(b)][static_cast<std::size_t>(bit)];
             if (c != io::Control::Count)
                 out.push({(f[b] >> bit) & 1 ? Kind::Press : Kind::Release, c, 0, src, t});
         }
@@ -134,10 +149,10 @@ void PanelDecoder::decode(const std::uint8_t* f, double t, EventBatch& out) noex
     }
 
     // Encoders and selector: cumulative int16 counters, the first frame is the reference.
-    for (std::size_t i = 0; i < std::size(kCounters); ++i)
+    for (std::size_t i = 0; i < m.counters.size() && i < counters_.size(); ++i)
     {
-        const auto& k = kCounters[i];
-        const auto v = be16(f + k.offset);
+        const auto& k = m.counters[i];
+        const auto v = word(m, f + k.offset);
         if (haveFrame_)
             if (const auto d = static_cast<std::int16_t>(static_cast<std::uint16_t>(v - counters_[i])); d != 0)
                 out.push({Kind::Turn, k.control, static_cast<std::int16_t>(d * k.sign), src, t});
@@ -145,10 +160,10 @@ void PanelDecoder::decode(const std::uint8_t* f, double t, EventBatch& out) noex
     }
 
     // Analog pots: absolute 0…1023, clockwise = more.
-    for (std::size_t i = 0; i < std::size(kAnalog); ++i)
+    for (std::size_t i = 0; i < m.analog.size() && i < analog_.size(); ++i)
     {
-        const auto& a = kAnalog[i];
-        const int raw = std::min<int>(be16(f + a.offset), kAnalogFullScale);
+        const auto& a = m.analog[i];
+        const int raw = std::min<int>(word(m, f + a.offset), kAnalogFullScale);
         int v = a.inverted ? kAnalogFullScale - raw : raw;
         if (v <= config_.analogEndZone)
             v = 0;
@@ -172,7 +187,7 @@ void PanelDecoder::decode(const std::uint8_t* f, double t, EventBatch& out) noex
 void PanelDecoder::decodeTouch(const std::uint8_t* f, double t, EventBatch& out) noexcept
 {
     const auto& c = config_.touch;
-    const int rx = be16(f + kTouchXOffset), ry = be16(f + kTouchYOffset);
+    const int rx = word(*map_, f + map_->touchX), ry = word(*map_, f + map_->touchY);
     const bool inside = rx >= c.minX && rx <= c.maxX && ry >= c.minY && ry <= c.maxY;
     const int jump = std::max(std::abs(rx - lastRawX_), std::abs(ry - lastRawY_));
     const bool steady = jump <= config_.touchJumpMax;
@@ -239,9 +254,21 @@ void TxFrame::setRgb(int channel, std::uint8_t r, std::uint8_t g, std::uint8_t b
 
 void TxFrame::setMono(int channel, bool lit, bool dim) noexcept
 {
-    if (channel < 0 || channel >= static_cast<int>(std::size(kMono)))
+    if (map_->mono == MonoEncoding::TwoBit)
+    {
+        // DJS-1000: two bits per lamp id, 0 off, 1 bright, 3 dim
+        if (channel < 0 || channel >= static_cast<int>(map_->twoBitLamps.size()))
+            return;
+        const auto& l = map_->twoBitLamps[static_cast<std::size_t>(channel)];
+        if (l.byte == 0)
+            return;
+        const unsigned v = ! lit ? 0u : dim ? 3u : 1u;
+        bytes_[l.byte] = static_cast<std::uint8_t>((bytes_[l.byte] & ~(3u << l.shift)) | v << l.shift);
         return;
-    const auto& m = kMono[channel];
+    }
+    if (channel < 0 || channel >= static_cast<int>(map_->monoChannels.size()))
+        return;
+    const auto& m = map_->monoChannels[static_cast<std::size_t>(channel)];
     const auto mask = static_cast<std::uint8_t>(1u << m.bit);
     bytes_[m.byte] = static_cast<std::uint8_t>(lit ? bytes_[m.byte] | mask : bytes_[m.byte] & ~mask);
     if (m.flagByte != 0)
@@ -252,9 +279,10 @@ void TxFrame::setMono(int channel, bool lit, bool dim) noexcept
 bool TxFrame::setLamp(io::Control c, std::uint32_t rgb, std::uint8_t level) noexcept
 {
     const int slot = io::lampSlot(c);
-    if (slot < 0 || slot >= io::kLampSlots || lampIndex[static_cast<std::size_t>(slot)] < 0)
+    const auto& index = lampIndex(map_->unit);
+    if (slot < 0 || slot >= io::kLampSlots || index[static_cast<std::size_t>(slot)] < 0)
         return false;
-    const auto& role = kLamps[static_cast<std::size_t>(lampIndex[static_cast<std::size_t>(slot)])];
+    const auto& role = map_->lamps[static_cast<std::size_t>(index[static_cast<std::size_t>(slot)])];
     if (role.rgb)
     {
         // colour × level, scaled to the panel's full scale (0x4a): integer, rounded.
@@ -270,11 +298,14 @@ bool TxFrame::setLamp(io::Control c, std::uint32_t rgb, std::uint8_t level) noex
     return true;
 }
 
-void TxFrame::finish() noexcept
+void TxFrame::finish(std::uint8_t flags) noexcept
 {
     bytes_[0] = kTxHeader;
-    bytes_[kTxBrightnessOffset] = 4; // NORMAL; the lamp levels carry the brightness preference
-    bytes_[kTxMarkerOffset] = kTxMarker;
+    bytes_[static_cast<std::size_t>(map_->txBrightnessOffset)] = 4; // NORMAL; the lamp levels carry the preference
+    if (map_->txMarkerOffset >= 0)
+        bytes_[static_cast<std::size_t>(map_->txMarkerOffset)] = map_->txMarker;
+    if (map_->txFlagsOffset >= 0)
+        bytes_[static_cast<std::size_t>(map_->txFlagsOffset)] = flags;
     const auto crc = crcX25(bytes_.data(), kCrcOffset);
     bytes_[kCrcOffset] = static_cast<std::uint8_t>(crc & 0xff);
     bytes_[kCrcOffset + 1] = static_cast<std::uint8_t>(crc >> 8);

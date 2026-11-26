@@ -110,22 +110,6 @@ void panFramebufferBack()
 }
 } // namespace
 
-// The root component's repaint() areas, collected without a desktop window (the hook juce::OpenGLContext uses too).
-struct DirtyAreas final : juce::CachedComponentImage
-{
-    explicit DirtyAreas(juce::Component& c) : root(c) {}
-    void paint(juce::Graphics&) override {}
-    bool invalidateAll() override { return invalidate(root.getLocalBounds()); }
-    bool invalidate(const juce::Rectangle<int>& area) override
-    {
-        areas.add(area.getIntersection(root.getLocalBounds()));
-        return false;
-    }
-    void releaseResources() override {}
-    juce::Component& root;
-    juce::RectangleList<int> areas;
-};
-
 struct GlDisplay::Impl
 {
     platform::RendererEnv env;
@@ -154,19 +138,9 @@ struct GlDisplay::Impl
     // a sub-rectangle of a wider image) to the texture.
     void updateUi()
     {
-        auto& areas = dirty->areas;
+        const auto areas = repaintUi(*root, *dirty, image);
         if (areas.isEmpty())
             return;
-        areas.consolidate();
-        if (areas.getNumRectangles() > 8) // many small areas cost more in clipping than one box
-            areas = juce::RectangleList<int>(areas.getBounds());
-        for (const auto& r : areas)
-            image.clear(r);
-        {
-            juce::Graphics g(image);
-            g.reduceClipRegion(areas);
-            root->paintEntireComponent(g, true);
-        }
         const juce::Image::BitmapData bits(image, juce::Image::BitmapData::readOnly);
         juce::RectangleList<int> rows;
         for (const auto& r : areas)
@@ -176,7 +150,6 @@ struct GlDisplay::Impl
         for (const auto& r : rows)
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, r.getY(), Screen::kWidth, r.getHeight(), GL_RGBA, GL_UNSIGNED_BYTE,
                             bits.getLinePointer(r.getY())); // rows are contiguous: lineStride = width × 4
-        areas.clear();
     }
 
     // 3: the scope, a triangle strip along the trace, offset along each point's normal; a soft wide pass, then the
@@ -285,14 +258,8 @@ bool GlDisplay::open(const platform::RendererEnv& env, std::string_view flavour,
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, Screen::kWidth, Screen::kHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     d.vertices.reserve(1024);
 
-    // The UI: shown without a desktop window. It takes no JUCE mouse clicks (touch comes from the platform), which
-    // also keeps JUCE from creating juce::Desktop, whose X11 windowing crashes on the unit.
     d.root = &ui;
-    ui.setInterceptsMouseClicks(false, false);
-    ui.setVisible(true); // repaint() stops at an invisible component
-    d.dirty = new DirtyAreas(ui);
-    ui.setCachedComponentImage(d.dirty);
-    d.dirty->invalidateAll();
+    d.dirty = attachUi(ui);
 
     char text[160];
     std::snprintf(text, sizeof text, "%s EGL %d.%d %s, surface %dx%d, %s, %s", d.flavour.c_str(), major, minor,

@@ -11,7 +11,7 @@
 // flavour (the unit ships its GPU driver in -fb and -x11 flavours that must never be mixed in one process).
 #pragma once
 
-#include "app/Screen.h"
+#include "app/ScreenOutput.h"
 
 #include "Platform.h"
 
@@ -21,7 +21,7 @@
 
 namespace app
 {
-class GlDisplay
+class GlDisplay final : public ScreenOutput
 {
 public:
     GlDisplay();
@@ -30,8 +30,8 @@ public:
     // flavour "fb" (the unit) or "x11" (a window). Shows `ui` (800 × 480) from now on. False + reason on failure.
     bool open(const platform::RendererEnv&, std::string_view flavour, juce::Component& ui, std::string& error);
     // Draws and presents one frame; `scope` = the samples to trace (512). False when the surface is lost.
-    bool draw(const SceneInput&, const float* scope, int scopeSize);
-    std::string describe() const;
+    bool draw(const SceneInput&, const float* scope, int scopeSize) override;
+    std::string describe() const override;
 
 private:
     struct Impl;

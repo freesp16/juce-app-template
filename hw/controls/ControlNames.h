@@ -20,7 +20,7 @@ enum class ControlKind : std::uint8_t
     Pad,      // velocity pad + pressure: Press (velocity) / Pressure / Release
     Button,   // Press / Release
     Encoder,  // Turn (signed detents)
-    Absolute, // Value 0…1023 (afs.*, main.volume)
+    Absolute, // Value 0…1023 (afs.*, main.volume; DJS-1000: tempo, fx.level, phones.level)
     Strip,    // Touch (contact, position) / Value (move) / Release; position 0…127
     Screen,   // Touch on Control::Screen: value 1 = down, 2 = drag, 0 = up; x, y in 800 × 480 points
     LampOnly, // produces no events

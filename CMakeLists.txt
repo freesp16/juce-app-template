@@ -74,6 +74,9 @@ juce_add_binary_data(app_fonts HEADER_NAME AppFonts.h NAMESPACE AppFonts SOURCES
 # ---- The code: the hardware layer (hw/) and the app (app/), one library -------------------------------------------
 file(GLOB HW_SOURCES CONFIGURE_DEPENDS hw/controls/*.cpp hw/common/*.cpp hw/${PLATFORM}/*.cpp)
 list(FILTER HW_SOURCES EXCLUDE REGEX "/GlDispatch.cpp$") # in the executable: it includes the generated stub list
+if(NOT PLATFORM STREQUAL imx6) # the panels' maps: the desktop stands in for either unit (setting unit=)
+    list(APPEND HW_SOURCES ${CMAKE_SOURCE_DIR}/hw/imx6/PanelRoles.cpp)
+endif()
 file(GLOB APP_SOURCES CONFIGURE_DEPENDS app/*.cpp)
 list(FILTER APP_SOURCES EXCLUDE REGEX "/Main.cpp$")
 add_library(code STATIC ${HW_SOURCES} ${APP_SOURCES})

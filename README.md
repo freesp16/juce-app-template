@@ -1,6 +1,7 @@
 # JUCE app template for the SP-16
 
-A small, complete starting point for your own software on the Pioneer DJ TORAIZ SP-16: a **JUCE 9** app that the
+A small, complete starting point for your own software on the Pioneer DJ TORAIZ SP-16 (and the DJS-1000, see
+[below](#run-it-on-the-djs-1000)): a **JUCE 9** app that the
 community [boot menu](https://github.com/freesp16/bootmenu) starts from a USB stick. It drives all of the unit's
 hardware:
 
@@ -59,6 +60,27 @@ Settings (all optional):
 | `audio_period=128` | the audio period in frames (default 256 at 44.1 kHz) |
 | `midi=0`, `audio=0` | no MIDI ports / no audio |
 | `stat=10` | seconds between the `STAT` log lines (frame rate, DSP load, xruns); 0 = none |
+| `display=cpu` | how the screen is drawn: `fb` (the GPU, on the unit), `x11` (the GPU in a window, on a desktop) or `cpu` (into an X window, without a GPU). By default the GPU, then the CPU when the GPU cannot draw |
+| `unit=djs1000` | which unit, when the detection is wrong (`sp16`, `djs1000`); on a desktop, the unit it stands in for |
+| `phones_knob=0` | DJS-1000: PHONES stays at `phones_gain` instead of following the PHONES LEVEL knob |
+
+## Run it on the DJS-1000
+
+The same program runs on the DJS-1000, Pioneer DJ's sampler on the same board as the SP-16. It finds out which unit it
+is on when it starts (the boot menu says so in `BOOTMENU_UNIT`, else the installed official software tells) and drives
+that unit's panel and outputs. What differs:
+
+- **Outputs:** MAIN (the master) and PHONES only. The demo's TONE jack skips the others, and their meters show `--`.
+- **Panel:** the four pad-mode keys are MUTE, HOT SLICE, SLICE and SCALE, so the demo's scales are on those. The
+  DJ section reports the tempo fader, TEMPO RESET and RANGE, NUDGE, SYNC, MASTER, FX, FX ON and FX LEVEL as controls
+  of their own (`tempo`, `tempo.reset`, `sync`, … in the log). The DJS-1000 has no analog filter.
+- **PHONES LEVEL** is a knob the program reads: the platform applies it to PHONES.
+- **The panel holds the outputs muted** until the program releases them. The platform does that once the audio runs.
+- **The power key** puts the unit in standby, as the official software does.
+- **Touch** uses the SP-16's calibration until it is checked on a DJS-1000.
+
+`platform::Platform::capabilities()` tells an app which unit it runs on and which controls and lamps it has, so a
+feature that needs a control the unit lacks can be left out (the demo's `Screen::setUnit`).
 
 ## Controls
 

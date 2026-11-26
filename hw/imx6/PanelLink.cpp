@@ -37,10 +37,14 @@ double nowMs() noexcept
 }
 } // namespace
 
-PanelLink::PanelLink(platform::TriggerSink* triggers, std::shared_ptr<panel::LampBus> lamps, bool trace,
-                     std::shared_ptr<panel::AnalogBoard> board)
-    : triggers_(triggers), lamps_(std::move(lamps)), board_(std::move(board)), trace_(trace)
+PanelLink::PanelLink(platform::Unit unit, const io::PadCalibration& pads, platform::TriggerSink* triggers,
+                     std::shared_ptr<panel::LampBus> lamps, bool trace, std::shared_ptr<panel::AnalogBoard> board)
+    : map_(panel::panelMap(unit)), triggers_(triggers), lamps_(std::move(lamps)), board_(std::move(board)), trace_(trace)
 {
+    panel::DecoderConfig config;
+    config.unit = unit;
+    config.pads = pads;
+    decoder_.configure(config);
     decoder_.setTriggers(triggers_);
 }
 
@@ -55,10 +59,14 @@ bool PanelLink::start(std::string& info)
         return false;
     }
     // Timer off first: the driver refuses bits/bytes while it runs, and the stock app leaves it on (DriverIoctl.h).
+    // The DJS-1000's link is taken over running instead, when it is set up as wanted: a pause may mute its outputs.
     std::uint16_t bits = 32;
     std::uint8_t endian = 1, timerOff = 0, timerOn = 1;
-    std::uint32_t bytes = panel::kFrameBytes, interval = 3;
-    if (! driverIoctl(fd_, "panel", "timer off", reqSetTimer, &timerOff, info)
+    std::uint32_t bytes = panel::kFrameBytes, interval = map_.intervalMs;
+    takenOver_ = map_.takeOver && driverRunningAs(fd_, bytes, interval);
+    if (takenOver_)
+        (void) ::ioctl(fd_, reqSetEndian, &endian);
+    else if (! driverIoctl(fd_, "panel", "timer off", reqSetTimer, &timerOff, info)
         || ! driverIoctl(fd_, "panel", "set bits", reqSetBits, &bits, info)
         || ! driverIoctl(fd_, "panel", "set endian", reqSetEndian, &endian, info)
         || ! driverIoctl(fd_, "panel", "set bytes", reqSetBytes, &bytes, info)
@@ -85,7 +93,8 @@ bool PanelLink::start(std::string& info)
     quit_ = false;
     running_ = true;
     thread_ = std::thread([this] { run(); });
-    info = std::string("panel: 128-byte RX frames from ") + panelPath + ", TX lamp frames on change + 4 Hz heartbeat"
+    info = std::string("panel: ") + std::string(platform::unitModel(map_.unit)) + ", 128-byte RX frames from " + panelPath
+         + (takenOver_ ? " (taken over running)" : "") + ", TX lamp frames on change + 4 Hz heartbeat"
          + (lamps_ ? "" : " (no lamps)");
     return true;
 }
@@ -99,7 +108,8 @@ void PanelLink::stop()
     if (lamps_)
         lamps_->setWake(nullptr, nullptr);
     if (fd_ >= 0)
-        driverTimerOff(fd_); // leave the device idle for the stock app
+        if (! map_.takeOver)
+            driverTimerOff(fd_); // leave the device idle for the stock app (the DJS-1000's keeps running: see start())
     for (int* fd : {&fd_, &wakeRead_, &wakeWrite_})
         if (*fd >= 0)
         {
@@ -166,7 +176,17 @@ void PanelLink::run()
                 batch_.count = 0;
                 const double t = nowMs();
                 decoder_.decode(frame, t, batch_); // pad hits reach the TriggerSink inside
-                frames_.fetch_add(1, std::memory_order_relaxed);
+                if (frames_.fetch_add(1, std::memory_order_relaxed) == 0 && lamps_)
+                    lamps_->answered();
+                // The power key: the DJS-1000's panel switches the unit off only when the program asks it to (the
+                // flags byte), as the stock app does on its release. Files are written out first.
+                const auto power = static_cast<std::uint8_t>(frame[map_.powerByte] & (1u << map_.powerBit));
+                if (lastPowerByte_ != 0 && power == 0 && map_.txFlagsOffset >= 0 && lamps_)
+                {
+                    ::sync();
+                    lamps_->requestStandby();
+                }
+                lastPowerByte_ = power;
                 for (int i = 0; i < batch_.count; ++i)
                 {
                     const auto& e = batch_.events[static_cast<std::size_t>(i)];
@@ -176,6 +196,12 @@ void PanelLink::run()
                         lamps_->echo(e);
                     if (board_ && e.control == io::Control::AfsHpCutoff && e.kind == io::ControlEvent::Kind::Value)
                         board_->setHpCutoff(e.value); // the analog high-pass follows the pot (as in the stock firmware)
+                    if (phonesLevel_ && e.control == io::Control::PhonesLevel
+                        && e.kind == io::ControlEvent::Kind::Value)
+                    {
+                        const float x = static_cast<float>(e.value) / static_cast<float>(panel::kAnalogFullScale);
+                        phonesLevel_->store(x * x, std::memory_order_relaxed);
+                    }
                 }
             }
         }

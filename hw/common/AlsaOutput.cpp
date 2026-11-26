@@ -206,7 +206,7 @@ void AlsaOutput::writeAux() noexcept
     const void* data = nullptr;
     if (auxS24_)
     {
-        const float g = device_.auxGain;
+        const float g = device_.auxGain * (device_.auxLevel ? device_.auxLevel->load(std::memory_order_relaxed) : 1.0f);
         std::int32_t* out = auxInterleaved32_.data();
         for (unsigned i = 0; i < period_; ++i, out += ch)
         {
@@ -217,7 +217,7 @@ void AlsaOutput::writeAux() noexcept
     }
     else
     {
-        const float g = device_.auxGain;
+        const float g = device_.auxGain * (device_.auxLevel ? device_.auxLevel->load(std::memory_order_relaxed) : 1.0f);
         std::int16_t* out = auxInterleaved_.data();
         for (unsigned i = 0; i < period_; ++i, out += ch)
         {
@@ -373,8 +373,11 @@ bool AlsaOutput::open(unsigned wantPeriod, unsigned wantPeriods, bool exactPerio
     unsigned rate = config_.sampleRate;
     snd_pcm_uframes_t period = wantPeriod, buffer = static_cast<snd_pcm_uframes_t>(wantPeriod) * wantPeriods;
     int dir = 0;
+    // A reopen keeps the format the buffers were sized for.
+    const bool s24 = exactPeriod ? mainS24_
+                                 : device_.mainS24 && snd_pcm_hw_params_test_format(pcm, hw, SND_PCM_FORMAT_S24_LE) == 0;
     if ((err = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0
-        || (err = snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE)) < 0
+        || (err = snd_pcm_hw_params_set_format(pcm, hw, s24 ? SND_PCM_FORMAT_S24_LE : SND_PCM_FORMAT_S16_LE)) < 0
         || (err = snd_pcm_hw_params_set_channels(pcm, hw, device_.channels)) < 0
         || (err = snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, &dir)) < 0
         || (err = exactPeriod ? snd_pcm_hw_params_set_period_size(pcm, hw, period, 0)
@@ -402,6 +405,7 @@ bool AlsaOutput::open(unsigned wantPeriod, unsigned wantPeriods, bool exactPerio
     snd_pcm_sw_params_set_avail_min(pcm, sw, period);
     snd_pcm_sw_params(pcm, sw);
     pcm_ = pcm;
+    mainS24_ = s24;
     period_ = static_cast<unsigned>(period);
     buffer_ = static_cast<unsigned>(buffer);
     periods_ = period_ > 0 ? buffer_ / period_ : 0;
@@ -462,7 +466,8 @@ bool AlsaOutput::start(const AudioConfig& config, platform::AudioProcessor& proc
     const auto isAux = [&](const PortInfo& p) { return secondary(p); };
     // Everything the audio thread touches is sized here (no allocation in run()): the app renders planar float
     // into one period per live port channel; absent ports get null pointers; silent channels stay zero.
-    interleaved_.assign(static_cast<std::size_t>(period_) * device_.channels, 0);
+    interleaved_.assign(mainS24_ ? 0 : static_cast<std::size_t>(period_) * device_.channels, 0);
+    interleaved32_.assign(mainS24_ ? static_cast<std::size_t>(period_) * device_.channels : 0, 0);
     const auto live = [&](const PortInfo& p) {
         if (hasLoop && p.port == AudioPort::FilterSend)
             return loopOut_ != nullptr;
@@ -492,7 +497,8 @@ bool AlsaOutput::start(const AudioConfig& config, platform::AudioProcessor& proc
     const double latencyMs = 1000.0 * buffer_ / (rate_ > 0 ? rate_ : 1);
     char ms[16];
     std::snprintf(ms, sizeof ms, "%.1f", latencyMs);
-    info = "alsa: " + device_.device + " S16_LE x" + std::to_string(device_.channels) + " " + std::to_string(rate_) + " Hz, period "
+    info = "alsa: " + device_.device + (mainS24_ ? " S24_LE x" : " S16_LE x") + std::to_string(device_.channels) + " "
+         + std::to_string(rate_) + " Hz, period "
          + std::to_string(period_) + " frames, buffer " + std::to_string(buffer_) + " frames (" + std::to_string(periods_)
          + " periods, " + ms + " ms), MAIN = ch " + std::to_string(ports_[0].left) + "/" + std::to_string(ports_[0].right);
     static constexpr const char* kNames[] = {"MAIN", "OUT3-4", "OUT5-6", "OUT7-8", "PHONES", "FILTER SEND"};
@@ -542,8 +548,18 @@ void AlsaOutput::convert() noexcept
         const float* r = out_[2 * static_cast<std::size_t>(port.port) + 1];
         if (l == nullptr)
             continue;
-        std::int16_t* out = interleaved_.data();
         const auto li = static_cast<std::size_t>(port.left), ri = static_cast<std::size_t>(port.right);
+        if (mainS24_)
+        {
+            std::int32_t* out = interleaved32_.data();
+            for (unsigned i = 0; i < period_; ++i, out += ch)
+            {
+                out[li] = toS24(l[i]);
+                out[ri] = toS24(r[i]);
+            }
+            continue;
+        }
+        std::int16_t* out = interleaved_.data();
         for (unsigned i = 0; i < period_; ++i, out += ch)
         {
             out[li] = toS16(l[i]);
@@ -565,6 +581,7 @@ bool AlsaOutput::reopen() noexcept
         {
             reopens_.fetch_add(1, std::memory_order_relaxed);
             std::fill(interleaved_.begin(), interleaved_.end(), std::int16_t {0});
+            std::fill(interleaved32_.begin(), interleaved32_.end(), std::int32_t {0});
             return true;
         }
     }
@@ -593,7 +610,9 @@ void AlsaOutput::run()
         while (done < period_ && ! quit_.load(std::memory_order_relaxed))
         {
             auto* pcm = static_cast<snd_pcm_t*>(pcm_);
-            const auto n = snd_pcm_writei(pcm, interleaved_.data() + done * ch, period_ - done);
+            const void* at = mainS24_ ? static_cast<const void*>(interleaved32_.data() + done * ch)
+                                      : static_cast<const void*>(interleaved_.data() + done * ch);
+            const auto n = snd_pcm_writei(pcm, at, period_ - done);
             if (n >= 0)
             {
                 done += static_cast<snd_pcm_uframes_t>(n);
